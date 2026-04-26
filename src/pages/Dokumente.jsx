@@ -53,11 +53,12 @@ export default function Dokumente() {
       const kundenId = getFeld(dokument, ['kunden_id', 'kunde_id'])
       return {
         id: dokument.id ?? `${getFeld(dokument, ['nummer'])}-${getFeld(dokument, ['datum'])}`,
+        dokumentId: dokument.id ?? null,
         nummer: getFeld(dokument, ['nummer']),
         typ: getFeld(dokument, ['typ']),
         kunde: kundenMap.get(kundenId) || '—',
         datum: getFeld(dokument, ['datum']),
-        betrag: getFeld(dokument, ['brutto', 'gesamtbetrag', 'netto']),
+        betrag: getFeld(dokument, ['brutto_gesamt', 'netto_gesamt']),
         status: getFeld(dokument, ['status']) || 'Entwurf',
       }
     })
@@ -175,7 +176,15 @@ export default function Dokumente() {
 
                 {!laden && !fehler && dokumentListe.map((dokument) => (
                   <tr key={dokument.id} className="hover:bg-gray-50/70">
-                    <td className="px-6 py-4 text-sm text-gray-900">{dokument.nummer || '—'}</td>
+                    <td className="px-6 py-4 text-sm text-gray-900">
+                      {dokument.dokumentId ? (
+                        <Link to={`/dokumente/${dokument.dokumentId}`} className="text-[#185FA5] hover:underline">
+                          {dokument.nummer || '—'}
+                        </Link>
+                      ) : (
+                        dokument.nummer || '—'
+                      )}
+                    </td>
                     <td className="px-6 py-4 text-sm text-gray-700">{dokument.typ || '—'}</td>
                     <td className="px-6 py-4 text-sm text-gray-700">{dokument.kunde}</td>
                     <td className="px-6 py-4 text-sm text-gray-700">{formatiereDatum(dokument.datum)}</td>

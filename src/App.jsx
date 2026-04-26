@@ -5,6 +5,7 @@ import Kunden from './pages/Kunden'
 import Einstellungen from './pages/Einstellungen'
 import Dokumente from './pages/Dokumente'
 import DokumentNeu from './pages/DokumentNeu'
+import DokumentDetail from './pages/DokumentDetail'
 import PrivateRoute from './components/PrivateRoute'
 
 function App() {
@@ -35,6 +36,11 @@ function App() {
         <Route path="/dokumente/neu" element={
           <PrivateRoute>
             <DokumentNeu />
+          </PrivateRoute>
+        } />
+        <Route path="/dokumente/:id" element={
+          <PrivateRoute>
+            <DokumentDetail />
           </PrivateRoute>
         } />
         <Route path="*" element={<Navigate to="/dashboard" />} />
