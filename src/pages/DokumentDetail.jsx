@@ -357,6 +357,12 @@ export default function DokumentDetail() {
             >
               Zurück
             </Link>
+            <Link
+              to={`/dokumente/${id}/bearbeiten`}
+              className="rounded-lg px-4 py-2.5 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
+            >
+              Bearbeiten
+            </Link>
             <button
               type="button"
               onClick={pdfHerunterladen}

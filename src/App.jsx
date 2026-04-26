@@ -6,6 +6,7 @@ import Einstellungen from './pages/Einstellungen'
 import Dokumente from './pages/Dokumente'
 import DokumentNeu from './pages/DokumentNeu'
 import DokumentDetail from './pages/DokumentDetail'
+import DokumentBearbeiten from './pages/DokumentBearbeiten'
 import PrivateRoute from './components/PrivateRoute'
 
 function App() {
@@ -41,6 +42,11 @@ function App() {
         <Route path="/dokumente/:id" element={
           <PrivateRoute>
             <DokumentDetail />
+          </PrivateRoute>
+        } />
+        <Route path="/dokumente/:id/bearbeiten" element={
+          <PrivateRoute>
+            <DokumentBearbeiten />
           </PrivateRoute>
         } />
         <Route path="*" element={<Navigate to="/dashboard" />} />
