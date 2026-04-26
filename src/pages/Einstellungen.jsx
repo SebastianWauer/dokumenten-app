@@ -18,6 +18,7 @@ const initialForm = {
   bic: '',
   bank: '',
   zahlungszielTage: '',
+  logoUrl: '',
 }
 
 function getFeld(datensatz, kandidaten) {
@@ -69,6 +70,7 @@ function baueProfilPayload(form, bekannteSpalten) {
     [waehleSpalte(['bank'], bekannteSpalten)]: form.bank,
     [waehleSpalte(['zahlungsziel_tage', 'zahlungsziel', 'payment_term_days'], bekannteSpalten)]:
       form.zahlungszielTage === '' ? null : Number(form.zahlungszielTage),
+    [waehleSpalte(['logo_url'], bekannteSpalten)]: form.logoUrl || null,
   }
 }
 
@@ -80,6 +82,8 @@ export default function Einstellungen() {
   const [speichern, setSpeichern] = useState(false)
   const [fehler, setFehler] = useState('')
   const [erfolg, setErfolg] = useState('')
+  const [logoDatei, setLogoDatei] = useState(null)
+  const [logoVorschau, setLogoVorschau] = useState('')
 
   async function ladeProfil() {
     setLaden(true)
@@ -116,6 +120,7 @@ export default function Einstellungen() {
         bic: getFeld(profil, ['bic']),
         bank: getFeld(profil, ['bank']),
         zahlungszielTage: String(getFeld(profil, ['zahlungsziel_tage', 'zahlungsziel', 'payment_term_days']) || ''),
+        logoUrl: getFeld(profil, ['logo_url']),
       })
     } catch (err) {
       setFehler(err.message || 'Firmenprofil konnte nicht geladen werden.')
@@ -128,11 +133,55 @@ export default function Einstellungen() {
     ladeProfil()
   }, [])
 
+  useEffect(() => {
+    return () => {
+      if (logoVorschau) {
+        URL.revokeObjectURL(logoVorschau)
+      }
+    }
+  }, [logoVorschau])
+
   function updateFeld(feld, wert) {
     setForm((alt) => ({
       ...alt,
       [feld]: wert,
     }))
+  }
+
+  function logoDateiAuswaehlen(e) {
+    const datei = e.target.files?.[0]
+    if (!datei) return
+
+    const erlaubteTypen = ['image/jpeg', 'image/png', 'image/svg+xml']
+    if (!erlaubteTypen.includes(datei.type)) {
+      setFehler('Bitte nur JPG, PNG oder SVG als Logo hochladen.')
+      return
+    }
+
+    if (logoVorschau) {
+      URL.revokeObjectURL(logoVorschau)
+    }
+
+    const vorschau = URL.createObjectURL(datei)
+    setLogoDatei(datei)
+    setLogoVorschau(vorschau)
+    setFehler('')
+    setErfolg('')
+  }
+
+  async function ladeLogoHoch(datei, zielProfilId) {
+    const dateiendung = (datei.name.split('.').pop() || 'png').toLowerCase()
+    const dateiname = `logo_${Date.now()}.${dateiendung}`
+    const pfad = `profil_${zielProfilId}/${dateiname}`
+
+    const { error: uploadError } = await supabase.storage
+      .from('logos')
+      .upload(pfad, datei, { upsert: true })
+
+    if (uploadError) throw uploadError
+
+    const { data } = supabase.storage.from('logos').getPublicUrl(pfad)
+    return data.publicUrl
   }
 
   async function speichernHandler(e) {
@@ -142,21 +191,30 @@ export default function Einstellungen() {
     setErfolg('')
 
     try {
-      const payload = baueProfilPayload(form, bekannteSpalten)
+      let aktiveProfilId = profilId
+      let finaleLogoUrl = form.logoUrl || ''
 
-      if (profilId) {
-        const { error } = await supabase.from('firmenprofile').update(payload).eq('id', profilId)
-        if (error) throw error
-      } else {
-        const { data, error } = await supabase.from('firmenprofile').insert([payload]).select('id').limit(1)
+      if (!aktiveProfilId) {
+        const payloadOhneLogo = baueProfilPayload({ ...form, logoUrl: '' }, bekannteSpalten)
+        const { data, error } = await supabase.from('firmenprofile').insert([payloadOhneLogo]).select('id').limit(1)
         if (error) throw error
 
         const neuesProfil = data?.[0]
-        if (neuesProfil?.id) {
-          setProfilId(neuesProfil.id)
-        }
+        if (!neuesProfil?.id) throw new Error('Firmenprofil konnte nicht angelegt werden.')
+        aktiveProfilId = neuesProfil.id
+        setProfilId(neuesProfil.id)
       }
 
+      if (logoDatei) {
+        finaleLogoUrl = await ladeLogoHoch(logoDatei, aktiveProfilId)
+      }
+
+      const payload = baueProfilPayload({ ...form, logoUrl: finaleLogoUrl }, bekannteSpalten)
+
+      const { error } = await supabase.from('firmenprofile').update(payload).eq('id', aktiveProfilId)
+      if (error) throw error
+
+      setLogoDatei(null)
       setErfolg('Firmenprofil wurde gespeichert.')
       await ladeProfil()
     } catch (err) {
@@ -312,6 +370,25 @@ export default function Einstellungen() {
                   />
                   <span className="text-sm text-gray-800">Kleinunternehmer nach § 19 UStG</span>
                 </label>
+              </div>
+
+              <div className="border border-gray-200 rounded-lg p-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Logo</label>
+                <input
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.svg,image/jpeg,image/png,image/svg+xml"
+                  onChange={logoDateiAuswaehlen}
+                  className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-[#185FA5] file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-[#154f8a]"
+                />
+                {(logoVorschau || form.logoUrl) && (
+                  <div className="mt-3">
+                    <img
+                      src={logoVorschau || form.logoUrl}
+                      alt="Logo-Vorschau"
+                      className="h-16 w-auto object-contain border border-gray-200 rounded-lg p-2 bg-white"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

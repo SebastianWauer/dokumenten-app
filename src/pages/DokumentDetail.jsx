@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Document, Page, StyleSheet, Text, View, pdf } from '@react-pdf/renderer'
+import { Document, Page, StyleSheet, Text, View, Image, pdf } from '@react-pdf/renderer'
 import { Link, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
@@ -81,6 +81,11 @@ const pdfStyles = StyleSheet.create({
   logoSub: {
     fontSize: 10,
     marginTop: 3,
+  },
+  logoImage: {
+    width: 132,
+    height: 52,
+    objectFit: 'contain',
   },
   adressRow: {
     marginTop: 24,
@@ -184,6 +189,7 @@ const pdfStyles = StyleSheet.create({
 })
 
 function RechnungPdf({ dokument, profil, kunde, positionen }) {
+  const logoUrl = getFeld(profil, ['logo_url'])
   const hinweis = profil?.paragraph19
     ? 'Nach § 19 Abs. 1 UStG wird keine Umsatzsteuer berechnet.'
     : `Umsatzsteuer: ${formatEuro(getFeld(dokument, ['ust_betrag']))}`
@@ -194,8 +200,14 @@ function RechnungPdf({ dokument, profil, kunde, positionen }) {
         <View style={pdfStyles.header}>
           <Text style={pdfStyles.senderLine}>{baueAdressZeileFirmenprofil(profil)}</Text>
           <View style={pdfStyles.logoWrap}>
-            <Text style={pdfStyles.logoTitle}>sport voice</Text>
-            <Text style={pdfStyles.logoSub}>Sebastian Wauer</Text>
+            {logoUrl ? (
+              <Image src={logoUrl} style={pdfStyles.logoImage} />
+            ) : (
+              <>
+                <Text style={pdfStyles.logoTitle}>sport voice</Text>
+                <Text style={pdfStyles.logoSub}>Sebastian Wauer</Text>
+              </>
+            )}
           </View>
         </View>
 
@@ -380,6 +392,16 @@ export default function DokumentDetail() {
 
           {!laden && !fehler && dokument && (
             <div className="space-y-6">
+              {getFeld(profil, ['logo_url']) && (
+                <div className="flex justify-end">
+                  <img
+                    src={getFeld(profil, ['logo_url'])}
+                    alt="Firmenlogo"
+                    className="h-14 w-auto object-contain"
+                  />
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <p className="text-gray-700">
                   Nummer: <span className="font-semibold text-gray-900">{getFeld(dokument, ['nummer']) || '—'}</span>
