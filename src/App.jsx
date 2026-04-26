@@ -3,6 +3,8 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Kunden from './pages/Kunden'
 import Einstellungen from './pages/Einstellungen'
+import Dokumente from './pages/Dokumente'
+import DokumentNeu from './pages/DokumentNeu'
 import PrivateRoute from './components/PrivateRoute'
 
 function App() {
@@ -23,6 +25,16 @@ function App() {
         <Route path="/einstellungen" element={
           <PrivateRoute>
             <Einstellungen />
+          </PrivateRoute>
+        } />
+        <Route path="/dokumente" element={
+          <PrivateRoute>
+            <Dokumente />
+          </PrivateRoute>
+        } />
+        <Route path="/dokumente/neu" element={
+          <PrivateRoute>
+            <DokumentNeu />
           </PrivateRoute>
         } />
         <Route path="*" element={<Navigate to="/dashboard" />} />

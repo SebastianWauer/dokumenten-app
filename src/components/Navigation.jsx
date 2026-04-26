@@ -12,6 +12,14 @@ export default function Navigation() {
   const location = useLocation()
   const navigate = useNavigate()
 
+  function istAktiv(path) {
+    if (path === '/dashboard') {
+      return location.pathname === '/dashboard'
+    }
+
+    return location.pathname === path || location.pathname.startsWith(`${path}/`)
+  }
+
   async function abmelden() {
     await supabase.auth.signOut()
     navigate('/login')
@@ -30,7 +38,7 @@ export default function Navigation() {
             key={link.path}
             to={link.path}
             className={`block px-3 py-2 rounded-lg text-sm transition-colors ${
-              location.pathname === link.path
+              istAktiv(link.path)
                 ? 'bg-blue-50 text-blue-700 font-medium'
                 : 'text-gray-600 hover:bg-gray-50'
             }`}
