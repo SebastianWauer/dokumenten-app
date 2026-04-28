@@ -7,11 +7,14 @@ import Dokumente from './pages/Dokumente'
 import DokumentNeu from './pages/DokumentNeu'
 import DokumentDetail from './pages/DokumentDetail'
 import DokumentBearbeiten from './pages/DokumentBearbeiten'
+import Eingangsrechnungen from './pages/Eingangsrechnungen'
 import PrivateRoute from './components/PrivateRoute'
+import ToastHost from './components/ToastHost'
 
 function App() {
   return (
     <BrowserRouter>
+      <ToastHost />
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/dashboard" element={
@@ -47,6 +50,11 @@ function App() {
         <Route path="/dokumente/:id/bearbeiten" element={
           <PrivateRoute>
             <DokumentBearbeiten />
+          </PrivateRoute>
+        } />
+        <Route path="/eingangsrechnungen" element={
+          <PrivateRoute>
+            <Eingangsrechnungen />
           </PrivateRoute>
         } />
         <Route path="*" element={<Navigate to="/dashboard" />} />

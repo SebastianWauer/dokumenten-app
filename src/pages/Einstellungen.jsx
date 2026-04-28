@@ -19,6 +19,7 @@ const initialForm = {
   email: '',
   steuernummer: '',
   ustId: '',
+  ustSatz: '19',
   kleinunternehmer: false,
   iban: '',
   bic: '',
@@ -35,6 +36,24 @@ function toBool(wert) {
   return false
 }
 
+function istGueltigePlz(wert) {
+  return /^\d{5}$/.test(String(wert || '').trim())
+}
+
+function istGueltigeIban(iban) {
+  const normalisiert = String(iban || '').replace(/\s+/g, '').toUpperCase()
+  if (!/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(normalisiert)) return false
+
+  const verschoben = `${normalisiert.slice(4)}${normalisiert.slice(0, 4)}`
+  const numerisch = verschoben.replace(/[A-Z]/g, (char) => String(char.charCodeAt(0) - 55))
+
+  let rest = 0
+  for (const zeichen of numerisch) {
+    rest = Number(`${rest}${zeichen}`) % 97
+  }
+  return rest === 1
+}
+
 function waehleSpalte(kandidaten, bekannteSpalten) {
   if (!bekannteSpalten || bekannteSpalten.length === 0) {
     return kandidaten[0]
@@ -49,7 +68,23 @@ function waehleSpalte(kandidaten, bekannteSpalten) {
   return kandidaten[0]
 }
 
+function waehleOptionaleSpalte(kandidaten, bekannteSpalten) {
+  if (!bekannteSpalten || bekannteSpalten.length === 0) {
+    return null
+  }
+
+  for (const kandidat of kandidaten) {
+    if (bekannteSpalten.includes(kandidat)) {
+      return kandidat
+    }
+  }
+
+  return null
+}
+
 function baueProfilPayload(form, bekannteSpalten) {
+  const ustSatzSpalte = waehleOptionaleSpalte(['ust_satz', 'mwst_satz', 'umsatzsteuer_satz', 'steuersatz'], bekannteSpalten)
+
   return {
     [waehleSpalte(['name'], bekannteSpalten)]: form.name,
     [waehleSpalte(['inhaber'], bekannteSpalten)]: form.inhaber,
@@ -61,6 +96,9 @@ function baueProfilPayload(form, bekannteSpalten) {
     [waehleSpalte(['email', 'e_mail'], bekannteSpalten)]: form.email,
     [waehleSpalte(['steuernummer'], bekannteSpalten)]: form.steuernummer,
     [waehleSpalte(['ust_id', 'ustid'], bekannteSpalten)]: form.ustId,
+    ...(ustSatzSpalte
+      ? { [ustSatzSpalte]: form.ustSatz === '' ? null : Number(form.ustSatz) }
+      : {}),
     [waehleSpalte(['paragraph19'], bekannteSpalten)]:
       form.kleinunternehmer,
     [waehleSpalte(['iban'], bekannteSpalten)]: form.iban,
@@ -116,6 +154,7 @@ export default function Einstellungen() {
         email: getFeld(profil, ['email', 'e_mail']),
         steuernummer: getFeld(profil, ['steuernummer']),
         ustId: getFeld(profil, ['ust_id', 'ustid']),
+        ustSatz: String(getFeld(profil, ['ust_satz', 'mwst_satz', 'umsatzsteuer_satz', 'steuersatz']) || '19'),
         kleinunternehmer: toBool(getFeld(profil, ['paragraph19'])),
         iban: getFeld(profil, ['iban']),
         bic: getFeld(profil, ['bic']),
@@ -301,6 +340,13 @@ export default function Einstellungen() {
     setErfolg('')
 
     try {
+      if (form.plz && !istGueltigePlz(form.plz)) {
+        throw new Error('PLZ muss aus genau 5 Ziffern bestehen.')
+      }
+      if (form.iban && !istGueltigeIban(form.iban)) {
+        throw new Error('Bitte eine gültige IBAN eingeben.')
+      }
+
       let aktiveProfilId = profilId
       let finaleLogoUrl = form.logoUrl || ''
 
@@ -327,6 +373,7 @@ export default function Einstellungen() {
       setLogoDatei(null)
       setErfolg('Firmenprofil wurde gespeichert.')
       await ladeProfil()
+      window.dispatchEvent(new Event('profil-aktualisiert'))
     } catch (err) {
       setFehler(err.message || 'Speichern fehlgeschlagen.')
     } finally {
@@ -466,6 +513,18 @@ export default function Einstellungen() {
                     onChange={(e) => updateFeld('ustId', e.target.value)}
                     className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
                     placeholder="DE123456789"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Standard-USt-Satz (%)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.ustSatz}
+                    onChange={(e) => updateFeld('ustSatz', e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="19"
                   />
                 </div>
               </div>

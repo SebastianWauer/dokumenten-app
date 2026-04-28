@@ -47,9 +47,9 @@ Diese Datei existiert lokal, ist aber nicht in Git (steht in .gitignore).
 ## Aktuelle Seiten (bereits gebaut)
 - `/login` – Login mit Supabase Auth (funktioniert)
 - `/dashboard` – Übersicht mit Navigation (funktioniert)
-- `/kunden` – noch nicht gebaut
-- `/dokumente` – noch nicht gebaut
-- `/einstellungen` – noch nicht gebaut
+- `/kunden` – Kundenverwaltung mit Bearbeitungsformular (funktioniert)
+- `/dokumente` – Dokumentenliste mit Filtern und Detailansicht (funktioniert)
+- `/einstellungen` – Firmenprofil, Layout und Stammdaten (funktioniert)
 
 ## Design-Regeln
 - Schlicht, professionell, viel Weißraum

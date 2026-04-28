@@ -3,9 +3,10 @@ import { useNavigate, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
 import { getFeld } from '../lib/utils'
+import { ladeTextVorlagen, speichereTextVorlage } from '../lib/textVorlagen'
 
 const dokumentTypen = ['Rechnung', 'Angebot', 'Auftragsbestätigung', 'Lieferschein', 'Gutschrift']
-const statusOptionen = ['Entwurf', 'Versendet', 'Bezahlt', 'Überfällig', 'Storniert']
+const statusOptionen = ['Entwurf', 'Versendet', 'Teilbezahlt', 'Bezahlt', 'Überfällig', 'Angenommen', 'Abgelehnt', 'Abgelaufen', 'Storniert']
 
 function toDecimal(wert) {
   const normalisiert = String(wert || '').replace(',', '.').trim()
@@ -20,12 +21,52 @@ function formatiereBetrag(wert) {
   }).format(Number(wert || 0))
 }
 
+function ermittleUstSatz(profil) {
+  const kandidaten = ['ust_satz', 'mwst_satz', 'umsatzsteuer_satz', 'steuersatz']
+  for (const feld of kandidaten) {
+    const wert = Number(profil?.[feld])
+    if (Number.isFinite(wert) && wert >= 0) {
+      return wert
+    }
+  }
+  return 19
+}
+
 function berechnePositionsGesamt(position) {
   const menge = toDecimal(position.menge)
   const einzelpreis = toDecimal(position.einzelpreis)
   const rabatt = toDecimal(position.rabattProzent)
   const brutto = menge * einzelpreis
   return brutto - (brutto * rabatt) / 100
+}
+
+function mapPositionAusDb(position, index) {
+  return {
+    id: position.id ?? `p-${index}`,
+    bezeichnung: getFeld(position, ['bezeichnung']),
+    beschreibung: getFeld(position, ['beschreibung']),
+    interneNotiz: getFeld(position, ['interne_notiz']),
+    menge: String(getFeld(position, ['menge']) || '1'),
+    einheit: getFeld(position, ['einheit']) || 'Stk',
+    einzelpreis: String(getFeld(position, ['einzelpreis']) || ''),
+    rabattProzent: String(getFeld(position, ['rabatt_prozent']) || '0'),
+  }
+}
+
+function mapPositionZuPayload(position, index, dokumentId) {
+  const istAufAnfrage = String(position.einzelpreis ?? '').trim() === ''
+  return {
+    dokument_id: dokumentId,
+    reihenfolge: index + 1,
+    bezeichnung: position.bezeichnung.trim(),
+    beschreibung: position.beschreibung?.trim() ? position.beschreibung.trim() : null,
+    interne_notiz: position.interneNotiz?.trim() ? position.interneNotiz.trim() : null,
+    menge: toDecimal(position.menge),
+    einheit: position.einheit.trim() || null,
+    einzelpreis: istAufAnfrage ? null : toDecimal(position.einzelpreis),
+    rabatt_prozent: istAufAnfrage ? 0 : toDecimal(position.rabattProzent),
+    gesamt: istAufAnfrage ? 0 : berechnePositionsGesamt(position),
+  }
 }
 
 function leerePosition(id) {
@@ -46,16 +87,20 @@ function mapPositionen(positionenData) {
     return [leerePosition(Date.now())]
   }
 
-  return positionenData.map((position, index) => ({
-    id: position.id ?? `p-${index}`,
-    bezeichnung: getFeld(position, ['bezeichnung']),
-    beschreibung: getFeld(position, ['beschreibung']),
-    interneNotiz: getFeld(position, ['interne_notiz']),
-    menge: String(getFeld(position, ['menge']) || '1'),
-    einheit: getFeld(position, ['einheit']) || 'Stk',
-    einzelpreis: String(getFeld(position, ['einzelpreis']) || ''),
-    rabattProzent: String(getFeld(position, ['rabatt_prozent']) || '0'),
-  }))
+  return positionenData.map(mapPositionAusDb)
+}
+
+function findeOptionaleSpalte(kandidaten, spalten) {
+  if (!spalten || spalten.length === 0) return null
+  return kandidaten.find((spalte) => spalten.includes(spalte)) || null
+}
+
+function addDaysIso(isoDate, days) {
+  if (!isoDate) return ''
+  const basis = new Date(isoDate)
+  if (Number.isNaN(basis.getTime())) return ''
+  basis.setDate(basis.getDate() + days)
+  return basis.toISOString().slice(0, 10)
 }
 
 export default function DokumentBearbeiten() {
@@ -68,11 +113,19 @@ export default function DokumentBearbeiten() {
   const [dokumentNummer, setDokumentNummer] = useState('')
   const [status, setStatus] = useState('Entwurf')
   const [kundenId, setKundenId] = useState('')
+  const [kundenSuche, setKundenSuche] = useState('')
   const [datum, setDatum] = useState('')
+  const [faelligkeitsdatum, setFaelligkeitsdatum] = useState('')
+  const [angebotGueltigBis, setAngebotGueltigBis] = useState('')
   const [leistungszeitraum, setLeistungszeitraum] = useState('')
+  const [kategorie, setKategorie] = useState('')
+  const [tagsText, setTagsText] = useState('')
   const [leistungszeitraumAnzeigen, setLeistungszeitraumAnzeigen] = useState(true)
   const [einleitungstext, setEinleitungstext] = useState('')
   const [schlusstext, setSchlusstext] = useState('')
+  const [vorlagen, setVorlagen] = useState([])
+  const [vorlagenName, setVorlagenName] = useState('')
+  const [gewaehlteVorlageId, setGewaehlteVorlageId] = useState('')
   const [positionen, setPositionen] = useState([leerePosition(1)])
   const [dokumentSpalten, setDokumentSpalten] = useState([])
 
@@ -80,6 +133,14 @@ export default function DokumentBearbeiten() {
   const [speichern, setSpeichern] = useState(false)
   const [fehler, setFehler] = useState('')
   const [formularFehler, setFormularFehler] = useState('')
+  const gefilterteKunden = useMemo(() => {
+    const suchwert = kundenSuche.trim().toLowerCase()
+    if (!suchwert) return kunden
+    return kunden.filter((kunde) => {
+      const label = getFeld(kunde, ['firma', 'name', 'unternehmen']) || ''
+      return label.toLowerCase().includes(suchwert)
+    })
+  }, [kunden, kundenSuche])
 
   const netto = useMemo(
     () => positionen.reduce((summe, position) => summe + berechnePositionsGesamt(position), 0),
@@ -87,8 +148,13 @@ export default function DokumentBearbeiten() {
   )
 
   const paragraph19Aktiv = Boolean(firmenprofil?.paragraph19)
-  const ust = paragraph19Aktiv ? 0 : netto * 0.19
+  const ustSatz = paragraph19Aktiv ? 0 : ermittleUstSatz(firmenprofil)
+  const ust = netto * (ustSatz / 100)
   const brutto = netto + ust
+  const faelligkeitsSpalte = useMemo(
+    () => findeOptionaleSpalte(['faelligkeitsdatum', 'faellig_am', 'due_date'], dokumentSpalten),
+    [dokumentSpalten],
+  )
 
   const ladeDaten = useCallback(async function ladeDaten() {
     setLaden(true)
@@ -126,7 +192,14 @@ export default function DokumentBearbeiten() {
       setStatus(getFeld(dokumentData, ['status']) || 'Entwurf')
       setKundenId(String(getFeld(dokumentData, ['kunde_id']) || ''))
       setDatum(getFeld(dokumentData, ['datum']) || '')
+      setFaelligkeitsdatum(
+        getFeld(dokumentData, ['faelligkeitsdatum', 'faellig_am', 'due_date']) || addDaysIso(getFeld(dokumentData, ['datum']) || '', 14),
+      )
+      setAngebotGueltigBis(getFeld(dokumentData, ['angebot_gueltig_bis', 'gueltig_bis', 'valid_until']) || '')
       setLeistungszeitraum(getFeld(dokumentData, ['leistungszeitraum']))
+      setKategorie(getFeld(dokumentData, ['kategorie', 'kategorie_name', 'projekt']) || '')
+      const tags = getFeld(dokumentData, ['tags'])
+      setTagsText(Array.isArray(tags) ? tags.join(', ') : '')
       setLeistungszeitraumAnzeigen(dokumentData.leistungszeitraum_anzeigen !== false)
       setEinleitungstext(getFeld(dokumentData, ['einleitungstext']))
       setSchlusstext(getFeld(dokumentData, ['schlusstext']))
@@ -146,6 +219,30 @@ export default function DokumentBearbeiten() {
     return () => window.clearTimeout(timeoutId)
   }, [ladeDaten])
 
+  useEffect(() => {
+    if (dokumentTyp !== 'Rechnung') return
+    if (!datum) return
+    setFaelligkeitsdatum((alt) => alt || addDaysIso(datum, 14))
+  }, [datum, dokumentTyp])
+
+  useEffect(() => {
+    let aktiv = true
+    ladeTextVorlagen()
+      .then((liste) => {
+        if (!aktiv) return
+        setVorlagen(liste)
+      })
+      .catch(() => {})
+    return () => {
+      aktiv = false
+    }
+  }, [])
+
+  const ausgewaehlteVorlage = useMemo(
+    () => vorlagen.find((vorlage) => vorlage.id === gewaehlteVorlageId) || null,
+    [vorlagen, gewaehlteVorlageId],
+  )
+
   function updatePosition(positionId, feld, wert) {
     setPositionen((alt) => alt.map((position) => {
       if (position.id !== positionId) return position
@@ -164,6 +261,27 @@ export default function DokumentBearbeiten() {
     })
   }
 
+  async function vorlageSpeichern() {
+    try {
+      const aktualisiert = await speichereTextVorlage({
+        name: vorlagenName,
+        einleitungstext,
+        schlusstext,
+      })
+      setVorlagen(aktualisiert)
+      setVorlagenName('')
+      setFormularFehler('')
+    } catch (err) {
+      setFormularFehler(err.message || 'Vorlage konnte nicht gespeichert werden.')
+    }
+  }
+
+  function vorlageAnwenden() {
+    if (!ausgewaehlteVorlage) return
+    setEinleitungstext(ausgewaehlteVorlage.einleitungstext || '')
+    setSchlusstext(ausgewaehlteVorlage.schlusstext || '')
+  }
+
   async function speichernHandler(e) {
     e.preventDefault()
     setSpeichern(true)
@@ -179,6 +297,9 @@ export default function DokumentBearbeiten() {
       }
       if (!dokumentNummer) {
         throw new Error('Dokumentnummer fehlt.')
+      }
+      if (status === 'Storniert') {
+        throw new Error('Stornierte Dokumente dürfen nicht bearbeitet werden.')
       }
 
       const ausgewaehlterKunde = kunden.find((kunde) => String(kunde.id) === String(kundenId))
@@ -204,32 +325,59 @@ export default function DokumentBearbeiten() {
         ust_betrag: ust,
         brutto_gesamt: brutto,
       }
+      const kategorieSpalte = findeOptionaleSpalte(['kategorie', 'kategorie_name', 'projekt'], dokumentSpalten)
+      const tagsSpalte = findeOptionaleSpalte(['tags'], dokumentSpalten)
+      if (kategorieSpalte) dokumentPayload[kategorieSpalte] = kategorie.trim() || null
+      if (tagsSpalte) {
+        const tags = tagsText.split(',').map((item) => item.trim()).filter(Boolean)
+        dokumentPayload[tagsSpalte] = tags.length > 0 ? tags : null
+      }
+      if (faelligkeitsSpalte) {
+        dokumentPayload[faelligkeitsSpalte] = dokumentTyp === 'Rechnung' ? (faelligkeitsdatum || addDaysIso(datum, 14) || null) : null
+      }
 
       if (dokumentSpalten.includes('leistungszeitraum_anzeigen')) {
         dokumentPayload.leistungszeitraum_anzeigen = leistungszeitraumAnzeigen
+      }
+      const gueltigBisSpalte = findeOptionaleSpalte(['angebot_gueltig_bis', 'gueltig_bis', 'valid_until'], dokumentSpalten)
+      if (dokumentTyp === 'Angebot' && gueltigBisSpalte) {
+        dokumentPayload[gueltigBisSpalte] = angebotGueltigBis || null
       }
 
       const { error: updateError } = await supabase.from('dokumente').update(dokumentPayload).eq('id', id)
       if (updateError) throw updateError
 
-      const { error: deletePositionError } = await supabase.from('positionen').delete().eq('dokument_id', id)
-      if (deletePositionError) throw deletePositionError
+      const { data: bestehendePositionen, error: bestehendePositionenError } = await supabase
+        .from('positionen')
+        .select('id')
+        .eq('dokument_id', id)
+        .order('reihenfolge', { ascending: true })
 
-      const neuePositionen = gueltigePositionen.map((position, index) => ({
-        dokument_id: id,
-        reihenfolge: index + 1,
-        bezeichnung: position.bezeichnung.trim(),
-        beschreibung: position.beschreibung?.trim() ? position.beschreibung.trim() : null,
-        interne_notiz: position.interneNotiz?.trim() ? position.interneNotiz.trim() : null,
-        menge: toDecimal(position.menge),
-        einheit: position.einheit.trim() || null,
-        einzelpreis: toDecimal(position.einzelpreis),
-        rabatt_prozent: toDecimal(position.rabattProzent),
-        gesamt: berechnePositionsGesamt(position),
-      }))
+      if (bestehendePositionenError) throw bestehendePositionenError
 
-      const { error: insertPositionError } = await supabase.from('positionen').insert(neuePositionen)
-      if (insertPositionError) throw insertPositionError
+      for (let index = 0; index < gueltigePositionen.length; index += 1) {
+        const position = gueltigePositionen[index]
+        const payload = mapPositionZuPayload(position, index, id)
+        const bestehende = bestehendePositionen?.[index]
+
+        if (bestehende?.id) {
+          const { error: updatePositionError } = await supabase.from('positionen').update(payload).eq('id', bestehende.id)
+          if (updatePositionError) throw updatePositionError
+        } else {
+          const { error: insertPositionError } = await supabase.from('positionen').insert([payload])
+          if (insertPositionError) throw insertPositionError
+        }
+      }
+
+      const idsZumLoeschen = (bestehendePositionen ?? [])
+        .slice(gueltigePositionen.length)
+        .map((position) => position.id)
+        .filter(Boolean)
+
+      if (idsZumLoeschen.length > 0) {
+        const { error: deletePositionError } = await supabase.from('positionen').delete().in('id', idsZumLoeschen)
+        if (deletePositionError) throw deletePositionError
+      }
 
       navigate(`/dokumente/${id}`)
     } catch (err) {
@@ -276,6 +424,13 @@ export default function DokumentBearbeiten() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Kunde</label>
+                  <input
+                    type="search"
+                    value={kundenSuche}
+                    onChange={(e) => setKundenSuche(e.target.value)}
+                    className="mb-2 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="Kunde suchen..."
+                  />
                   <select
                     value={kundenId}
                     onChange={(e) => setKundenId(e.target.value)}
@@ -283,7 +438,7 @@ export default function DokumentBearbeiten() {
                     required
                   >
                     <option value="">Kunde auswählen</option>
-                    {kunden.map((kunde) => (
+                    {gefilterteKunden.map((kunde) => (
                       <option key={kunde.id} value={String(kunde.id)}>
                         {getFeld(kunde, ['firma', 'name', 'unternehmen']) || `Kunde ${kunde.id}`}
                       </option>
@@ -308,7 +463,13 @@ export default function DokumentBearbeiten() {
                   <input
                     type="date"
                     value={datum}
-                    onChange={(e) => setDatum(e.target.value)}
+                    onChange={(e) => {
+                      const nextDatum = e.target.value
+                      setDatum(nextDatum)
+                      if (dokumentTyp === 'Rechnung') {
+                        setFaelligkeitsdatum(addDaysIso(nextDatum, 14))
+                      }
+                    }}
                     className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
                     required
                   />
@@ -333,6 +494,48 @@ export default function DokumentBearbeiten() {
                     Im PDF anzeigen
                   </label>
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Kategorie / Projekt</label>
+                  <input
+                    type="text"
+                    value={kategorie}
+                    onChange={(e) => setKategorie(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="z. B. GTWC Barcelona"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tags (kommagetrennt)</label>
+                  <input
+                    type="text"
+                    value={tagsText}
+                    onChange={(e) => setTagsText(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="moderation, motorsport, spanien"
+                  />
+                </div>
+                {dokumentTyp === 'Rechnung' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Fälligkeitsdatum</label>
+                    <input
+                      type="date"
+                      value={faelligkeitsdatum}
+                      onChange={(e) => setFaelligkeitsdatum(e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    />
+                  </div>
+                )}
+                {dokumentTyp === 'Angebot' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Gültig bis</label>
+                    <input
+                      type="date"
+                      value={angebotGueltigBis}
+                      onChange={(e) => setAngebotGueltigBis(e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
@@ -460,7 +663,9 @@ export default function DokumentBearbeiten() {
                             />
                           </td>
                           <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                            {formatiereBetrag(berechnePositionsGesamt(position))}
+                            {String(position.einzelpreis ?? '').trim() === ''
+                              ? 'Auf Anfrage'
+                              : formatiereBetrag(berechnePositionsGesamt(position))}
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
@@ -502,13 +707,53 @@ export default function DokumentBearbeiten() {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+                <p className="text-sm font-medium text-gray-800">Textvorlagen</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <select
+                    value={gewaehlteVorlageId}
+                    onChange={(e) => setGewaehlteVorlageId(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                  >
+                    <option value="">Vorlage auswählen...</option>
+                    {vorlagen.map((vorlage) => (
+                      <option key={vorlage.id} value={vorlage.id}>{vorlage.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={vorlageAnwenden}
+                    disabled={!ausgewaehlteVorlage}
+                    className="rounded-lg px-3 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 disabled:opacity-60 transition-colors"
+                  >
+                    Vorlage anwenden
+                  </button>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={vorlagenName}
+                      onChange={(e) => setVorlagenName(e.target.value)}
+                      placeholder="Name für Vorlage"
+                      className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    />
+                    <button
+                      type="button"
+                      onClick={vorlageSpeichern}
+                      className="rounded-lg px-3 py-2.5 text-sm font-medium text-white bg-[#185FA5] hover:bg-[#154f8a] transition-colors"
+                    >
+                      Speichern
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                   <p className="text-gray-700">
                     Netto: <span className="font-semibold text-gray-900">{formatiereBetrag(netto)}</span>
                   </p>
                   <p className="text-gray-700">
-                    USt ({paragraph19Aktiv ? '0' : '19'} %):{' '}
+                    USt ({ustSatz} %):{' '}
                     <span className="font-semibold text-gray-900">{formatiereBetrag(ust)}</span>
                   </p>
                   <p className="text-gray-700">

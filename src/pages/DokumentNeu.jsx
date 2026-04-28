@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
 import { getFeld } from '../lib/utils'
+import { ladeTextVorlagen, speichereTextVorlage } from '../lib/textVorlagen'
 
 const dokumentTypen = ['Rechnung', 'Angebot', 'Auftragsbestätigung', 'Lieferschein', 'Gutschrift']
 
@@ -47,6 +48,17 @@ function formatiereBetrag(wert) {
   }).format(Number(wert || 0))
 }
 
+function ermittleUstSatz(profil) {
+  const kandidaten = ['ust_satz', 'mwst_satz', 'umsatzsteuer_satz', 'steuersatz']
+  for (const feld of kandidaten) {
+    const wert = Number(profil?.[feld])
+    if (Number.isFinite(wert) && wert >= 0) {
+      return wert
+    }
+  }
+  return 19
+}
+
 function heutigesDatum() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -57,6 +69,22 @@ function berechnePositionsGesamt(position) {
   const rabatt = toDecimal(position.rabattProzent)
   const brutto = menge * einzelpreis
   return brutto - (brutto * rabatt) / 100
+}
+
+function mapPositionZuPayload(position, index, dokumentId) {
+  const istAufAnfrage = String(position.einzelpreis ?? '').trim() === ''
+  return {
+    dokument_id: dokumentId,
+    reihenfolge: index + 1,
+    bezeichnung: position.bezeichnung.trim(),
+    beschreibung: position.beschreibung?.trim() ? position.beschreibung.trim() : null,
+    interne_notiz: position.interneNotiz?.trim() ? position.interneNotiz.trim() : null,
+    menge: toDecimal(position.menge),
+    einheit: position.einheit.trim() || null,
+    einzelpreis: istAufAnfrage ? null : toDecimal(position.einzelpreis),
+    rabatt_prozent: istAufAnfrage ? 0 : toDecimal(position.rabattProzent),
+    gesamt: istAufAnfrage ? 0 : berechnePositionsGesamt(position),
+  }
 }
 
 function leerePosition(id) {
@@ -91,6 +119,19 @@ function findeCounterInfo(dokumentTyp, profil) {
   }
 }
 
+function findeOptionaleSpalte(kandidaten, spalten) {
+  if (!spalten || spalten.length === 0) return null
+  return kandidaten.find((spalte) => spalten.includes(spalte)) || null
+}
+
+function addDaysIso(isoDate, days) {
+  if (!isoDate) return ''
+  const basis = new Date(isoDate)
+  if (Number.isNaN(basis.getTime())) return ''
+  basis.setDate(basis.getDate() + days)
+  return basis.toISOString().slice(0, 10)
+}
+
 export default function DokumentNeu() {
   const navigate = useNavigate()
 
@@ -98,18 +139,31 @@ export default function DokumentNeu() {
   const [kunden, setKunden] = useState([])
   const [dokumentTyp, setDokumentTyp] = useState('Rechnung')
   const [kundenId, setKundenId] = useState('')
+  const [kundenSuche, setKundenSuche] = useState('')
   const [datum, setDatum] = useState(heutigesDatum())
+  const [faelligkeitsdatum, setFaelligkeitsdatum] = useState(addDaysIso(heutigesDatum(), 14))
+  const [angebotGueltigBis, setAngebotGueltigBis] = useState('')
   const [leistungszeitraum, setLeistungszeitraum] = useState('')
+  const [kategorie, setKategorie] = useState('')
+  const [tagsText, setTagsText] = useState('')
   const [einleitungstext, setEinleitungstext] = useState('')
   const [schlusstext, setSchlusstext] = useState('')
+  const [vorlagen, setVorlagen] = useState([])
+  const [vorlagenName, setVorlagenName] = useState('')
+  const [gewaehlteVorlageId, setGewaehlteVorlageId] = useState('')
   const [positionen, setPositionen] = useState([leerePosition(1)])
 
   const [laden, setLaden] = useState(true)
   const [speichern, setSpeichern] = useState(false)
   const [fehler, setFehler] = useState('')
   const [formularFehler, setFormularFehler] = useState('')
+  const [dokumentSpalten, setDokumentSpalten] = useState([])
 
   const counterInfo = useMemo(() => findeCounterInfo(dokumentTyp, firmenprofil), [dokumentTyp, firmenprofil])
+  const faelligkeitsSpalte = useMemo(
+    () => findeOptionaleSpalte(['faelligkeitsdatum', 'faellig_am', 'due_date'], dokumentSpalten),
+    [dokumentSpalten],
+  )
 
   const netto = useMemo(
     () => positionen.reduce((summe, position) => summe + berechnePositionsGesamt(position), 0),
@@ -117,21 +171,32 @@ export default function DokumentNeu() {
   )
 
   const paragraph19Aktiv = Boolean(firmenprofil?.paragraph19)
-  const ust = paragraph19Aktiv ? 0 : netto * 0.19
+  const ustSatz = paragraph19Aktiv ? 0 : ermittleUstSatz(firmenprofil)
+  const ust = netto * (ustSatz / 100)
   const brutto = netto + ust
+  const gefilterteKunden = useMemo(() => {
+    const suchwert = kundenSuche.trim().toLowerCase()
+    if (!suchwert) return kunden
+    return kunden.filter((kunde) => {
+      const label = getFeld(kunde, ['firma', 'name', 'unternehmen']) || ''
+      return label.toLowerCase().includes(suchwert)
+    })
+  }, [kunden, kundenSuche])
 
   const ladeDaten = useCallback(async function ladeDaten() {
     setLaden(true)
     setFehler('')
 
     try {
-      const [{ data: profilData, error: profilError }, { data: kundenData, error: kundenError }] = await Promise.all([
+      const [{ data: profilData, error: profilError }, { data: kundenData, error: kundenError }, { data: dokumentData, error: dokumentError }] = await Promise.all([
         supabase.from('firmenprofile').select('*').limit(1),
         supabase.from('kunden').select('*').order('firma', { ascending: true }),
+        supabase.from('dokumente').select('*').limit(1),
       ])
 
       if (profilError) throw profilError
       if (kundenError) throw kundenError
+      if (dokumentError) throw dokumentError
 
       const profil = profilData?.[0] ?? null
       const kundenListe = kundenData ?? []
@@ -139,6 +204,7 @@ export default function DokumentNeu() {
       setFirmenprofil(profil)
       setKunden(kundenListe)
       setKundenId(kundenListe[0]?.id ? String(kundenListe[0].id) : '')
+      setDokumentSpalten(Object.keys(dokumentData?.[0] || {}))
     } catch (err) {
       setFehler(err.message || 'Daten konnten nicht geladen werden.')
     } finally {
@@ -153,6 +219,30 @@ export default function DokumentNeu() {
 
     return () => window.clearTimeout(timeoutId)
   }, [ladeDaten])
+
+  useEffect(() => {
+    if (dokumentTyp !== 'Rechnung') return
+    if (!datum) return
+    setFaelligkeitsdatum((alt) => alt || addDaysIso(datum, 14))
+  }, [datum, dokumentTyp])
+
+  useEffect(() => {
+    let aktiv = true
+    ladeTextVorlagen()
+      .then((liste) => {
+        if (!aktiv) return
+        setVorlagen(liste)
+      })
+      .catch(() => {})
+    return () => {
+      aktiv = false
+    }
+  }, [])
+
+  const ausgewaehlteVorlage = useMemo(
+    () => vorlagen.find((vorlage) => vorlage.id === gewaehlteVorlageId) || null,
+    [vorlagen, gewaehlteVorlageId],
+  )
 
   function updatePosition(positionId, feld, wert) {
     setPositionen((alt) => alt.map((position) => {
@@ -172,11 +262,34 @@ export default function DokumentNeu() {
     })
   }
 
+  async function vorlageSpeichern() {
+    try {
+      const aktualisiert = await speichereTextVorlage({
+        name: vorlagenName,
+        einleitungstext,
+        schlusstext,
+      })
+      setVorlagen(aktualisiert)
+      setVorlagenName('')
+      setFormularFehler('')
+    } catch (err) {
+      setFormularFehler(err.message || 'Vorlage konnte nicht gespeichert werden.')
+    }
+  }
+
+  function vorlageAnwenden() {
+    if (!ausgewaehlteVorlage) return
+    setEinleitungstext(ausgewaehlteVorlage.einleitungstext || '')
+    setSchlusstext(ausgewaehlteVorlage.schlusstext || '')
+  }
+
   async function speichernHandler(e) {
     e.preventDefault()
     setSpeichern(true)
     setFormularFehler('')
     setFehler('')
+
+    let counterWurdeErhoeht = false
 
     try {
       if (!firmenprofil?.id) {
@@ -216,6 +329,20 @@ export default function DokumentNeu() {
         ust_betrag: ust,
         brutto_gesamt: brutto,
       }
+      const kategorieSpalte = findeOptionaleSpalte(['kategorie', 'kategorie_name', 'projekt'], dokumentSpalten)
+      const tagsSpalte = findeOptionaleSpalte(['tags'], dokumentSpalten)
+      if (kategorieSpalte) dokumentPayload[kategorieSpalte] = kategorie.trim() || null
+      if (tagsSpalte) {
+        const tags = tagsText.split(',').map((item) => item.trim()).filter(Boolean)
+        dokumentPayload[tagsSpalte] = tags.length > 0 ? tags : null
+      }
+      if (faelligkeitsSpalte) {
+        dokumentPayload[faelligkeitsSpalte] = dokumentTyp === 'Rechnung' ? (faelligkeitsdatum || addDaysIso(datum, 14) || null) : null
+      }
+      const gueltigBisSpalte = findeOptionaleSpalte(['angebot_gueltig_bis', 'gueltig_bis', 'valid_until'], dokumentSpalten)
+      if (dokumentTyp === 'Angebot' && gueltigBisSpalte) {
+        dokumentPayload[gueltigBisSpalte] = angebotGueltigBis || null
+      }
 
       const { data: counterUpdate, error: profilError } = await supabase
         .from('firmenprofile')
@@ -228,6 +355,7 @@ export default function DokumentNeu() {
       if (profilError || !counterUpdate?.id) {
         throw new Error('Dokumentnummer wurde gerade anderweitig vergeben. Bitte erneut speichern.')
       }
+      counterWurdeErhoeht = true
 
       const { data: neuesDokument, error: dokumentError } = await supabase
         .from('dokumente')
@@ -237,24 +365,20 @@ export default function DokumentNeu() {
 
       if (dokumentError) throw dokumentError
 
-      const positionPayloads = gueltigePositionen.map((position, index) => ({
-        dokument_id: neuesDokument.id,
-        reihenfolge: index + 1,
-        bezeichnung: position.bezeichnung.trim(),
-        beschreibung: position.beschreibung?.trim() ? position.beschreibung.trim() : null,
-        interne_notiz: position.interneNotiz?.trim() ? position.interneNotiz.trim() : null,
-        menge: toDecimal(position.menge),
-        einheit: position.einheit.trim() || null,
-        einzelpreis: toDecimal(position.einzelpreis),
-        rabatt_prozent: toDecimal(position.rabattProzent),
-        gesamt: berechnePositionsGesamt(position),
-      }))
+      const positionPayloads = gueltigePositionen.map((position, index) => mapPositionZuPayload(position, index, neuesDokument.id))
 
       const { error: positionError } = await supabase.from('positionen').insert(positionPayloads)
       if (positionError) throw positionError
 
-      navigate('/dokumente')
+      navigate('/dokumente', { state: { erfolg: `Dokument ${counterInfo.nummer} wurde erfolgreich erstellt.` } })
     } catch (err) {
+      if (counterWurdeErhoeht && firmenprofil?.id && counterInfo.nummerFeld && counterInfo.aktuelleNummer !== null) {
+        await supabase
+          .from('firmenprofile')
+          .update({ [counterInfo.nummerFeld]: counterInfo.aktuelleNummer })
+          .eq('id', firmenprofil.id)
+          .eq(counterInfo.nummerFeld, counterInfo.aktuelleNummer + 1)
+      }
       setFormularFehler(err.message || 'Dokument konnte nicht gespeichert werden.')
     } finally {
       setSpeichern(false)
@@ -298,6 +422,13 @@ export default function DokumentNeu() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Kunde</label>
+                  <input
+                    type="search"
+                    value={kundenSuche}
+                    onChange={(e) => setKundenSuche(e.target.value)}
+                    className="mb-2 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="Kunde suchen..."
+                  />
                   <select
                     value={kundenId}
                     onChange={(e) => setKundenId(e.target.value)}
@@ -305,7 +436,7 @@ export default function DokumentNeu() {
                     required
                   >
                     <option value="">Kunde auswählen</option>
-                    {kunden.map((kunde) => (
+                    {gefilterteKunden.map((kunde) => (
                       <option key={kunde.id} value={String(kunde.id)}>
                         {getFeld(kunde, ['firma', 'name', 'unternehmen']) || `Kunde ${kunde.id}`}
                       </option>
@@ -330,11 +461,28 @@ export default function DokumentNeu() {
                   <input
                     type="date"
                     value={datum}
-                    onChange={(e) => setDatum(e.target.value)}
+                    onChange={(e) => {
+                      const nextDatum = e.target.value
+                      setDatum(nextDatum)
+                      if (dokumentTyp === 'Rechnung') {
+                        setFaelligkeitsdatum(addDaysIso(nextDatum, 14))
+                      }
+                    }}
                     className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
                     required
                   />
                 </div>
+                {dokumentTyp === 'Rechnung' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Fälligkeitsdatum</label>
+                    <input
+                      type="date"
+                      value={faelligkeitsdatum}
+                      onChange={(e) => setFaelligkeitsdatum(e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    />
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Leistungszeitraum</label>
@@ -346,6 +494,37 @@ export default function DokumentNeu() {
                     placeholder="z. B. 01.04.2026 - 15.04.2026"
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Kategorie / Projekt</label>
+                  <input
+                    type="text"
+                    value={kategorie}
+                    onChange={(e) => setKategorie(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="z. B. GTWC Barcelona"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Tags (kommagetrennt)</label>
+                  <input
+                    type="text"
+                    value={tagsText}
+                    onChange={(e) => setTagsText(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="moderation, motorsport, spanien"
+                  />
+                </div>
+                {dokumentTyp === 'Angebot' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Gültig bis</label>
+                    <input
+                      type="date"
+                      value={angebotGueltigBis}
+                      onChange={(e) => setAngebotGueltigBis(e.target.value)}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    />
+                  </div>
+                )}
               </div>
 
               <div className="space-y-3">
@@ -460,7 +639,9 @@ export default function DokumentNeu() {
                             />
                           </td>
                           <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                            {formatiereBetrag(berechnePositionsGesamt(position))}
+                            {String(position.einzelpreis ?? '').trim() === ''
+                              ? 'Auf Anfrage'
+                              : formatiereBetrag(berechnePositionsGesamt(position))}
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
@@ -502,13 +683,53 @@ export default function DokumentNeu() {
                 </div>
               </div>
 
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 space-y-3">
+                <p className="text-sm font-medium text-gray-800">Textvorlagen</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <select
+                    value={gewaehlteVorlageId}
+                    onChange={(e) => setGewaehlteVorlageId(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                  >
+                    <option value="">Vorlage auswählen...</option>
+                    {vorlagen.map((vorlage) => (
+                      <option key={vorlage.id} value={vorlage.id}>{vorlage.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={vorlageAnwenden}
+                    disabled={!ausgewaehlteVorlage}
+                    className="rounded-lg px-3 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-200 hover:bg-gray-100 disabled:opacity-60 transition-colors"
+                  >
+                    Vorlage anwenden
+                  </button>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={vorlagenName}
+                      onChange={(e) => setVorlagenName(e.target.value)}
+                      placeholder="Name für Vorlage"
+                      className="flex-1 border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    />
+                    <button
+                      type="button"
+                      onClick={vorlageSpeichern}
+                      className="rounded-lg px-3 py-2.5 text-sm font-medium text-white bg-[#185FA5] hover:bg-[#154f8a] transition-colors"
+                    >
+                      Speichern
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                   <p className="text-gray-700">
                     Netto: <span className="font-semibold text-gray-900">{formatiereBetrag(netto)}</span>
                   </p>
                   <p className="text-gray-700">
-                    USt ({paragraph19Aktiv ? '0' : '19'} %):{' '}
+                    USt ({ustSatz} %):{' '}
                     <span className="font-semibold text-gray-900">{formatiereBetrag(ust)}</span>
                   </p>
                   <p className="text-gray-700">
