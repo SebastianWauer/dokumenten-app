@@ -1,38 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
-
-function getFeld(datensatz, kandidaten) {
-  for (const feld of kandidaten) {
-    if (datensatz?.[feld] !== null && datensatz?.[feld] !== undefined && datensatz?.[feld] !== '') {
-      return datensatz[feld]
-    }
-  }
-  return ''
-}
-
-function formatiereBetrag(wert) {
-  const nummer = Number(wert || 0)
-  return new Intl.NumberFormat('de-DE', {
-    style: 'currency',
-    currency: 'EUR',
-  }).format(nummer)
-}
-
-function formatiereDatum(wert) {
-  if (!wert) return '—'
-  const datum = new Date(wert)
-  if (Number.isNaN(datum.getTime())) return wert
-  return new Intl.DateTimeFormat('de-DE').format(datum)
-}
+import { formatiereBetrag, formatiereDatum, getFeld } from '../lib/utils'
 
 export default function Dokumente() {
   const [dokumente, setDokumente] = useState([])
   const [kunden, setKunden] = useState([])
   const [laden, setLaden] = useState(true)
   const [fehler, setFehler] = useState('')
-  const hatGeladenRef = useRef(false)
+  const [suche, setSuche] = useState('')
+  const [typFilter, setTypFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
 
   const kundenMap = useMemo(() => {
     const map = new Map()
@@ -64,7 +43,29 @@ export default function Dokumente() {
     })
   }, [dokumente, kundenMap])
 
-  async function ladeDaten() {
+  const gefilterteDokumente = useMemo(() => {
+    const suchwert = suche.trim().toLowerCase()
+
+    return dokumentListe.filter((dokument) => {
+      const passtSuche = !suchwert || [
+        dokument.nummer,
+        dokument.typ,
+        dokument.kunde,
+        dokument.status,
+        formatiereDatum(dokument.datum),
+      ].some((wert) => String(wert || '').toLowerCase().includes(suchwert))
+
+      const passtTyp = !typFilter || dokument.typ === typFilter
+      const passtStatus = !statusFilter || dokument.status === statusFilter
+
+      return passtSuche && passtTyp && passtStatus
+    })
+  }, [dokumentListe, suche, typFilter, statusFilter])
+
+  const typen = useMemo(() => [...new Set(dokumentListe.map((dokument) => dokument.typ).filter(Boolean))], [dokumentListe])
+  const statusWerte = useMemo(() => [...new Set(dokumentListe.map((dokument) => dokument.status).filter(Boolean))], [dokumentListe])
+
+  const ladeDaten = useCallback(async function ladeDaten() {
     setLaden(true)
     setFehler('')
 
@@ -95,13 +96,15 @@ export default function Dokumente() {
     } finally {
       setLaden(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    if (hatGeladenRef.current) return
-    hatGeladenRef.current = true
-    ladeDaten()
-  }, [])
+    const timeoutId = window.setTimeout(() => {
+      ladeDaten()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [ladeDaten])
 
   return (
     <div className="flex min-h-screen bg-gray-50">
@@ -125,6 +128,35 @@ export default function Dokumente() {
         </div>
 
         <section className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 border-b border-gray-200 p-4">
+            <input
+              type="search"
+              value={suche}
+              onChange={(e) => setSuche(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+              placeholder="Suchen nach Nummer, Kunde, Status..."
+            />
+            <select
+              value={typFilter}
+              onChange={(e) => setTypFilter(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+            >
+              <option value="">Alle Typen</option>
+              {typen.map((typ) => (
+                <option key={typ} value={typ}>{typ}</option>
+              ))}
+            </select>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+            >
+              <option value="">Alle Status</option>
+              {statusWerte.map((status) => (
+                <option key={status} value={status}>{status}</option>
+              ))}
+            </select>
+          </div>
           <div className="overflow-x-auto">
             <table className="min-w-full">
               <thead className="bg-gray-50 border-b border-gray-200">
@@ -166,15 +198,15 @@ export default function Dokumente() {
                   </tr>
                 )}
 
-                {!laden && !fehler && dokumentListe.length === 0 && (
+                {!laden && !fehler && gefilterteDokumente.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-6 py-6 text-sm text-gray-500">
-                      Noch keine Dokumente vorhanden.
+                      Keine passenden Dokumente gefunden.
                     </td>
                   </tr>
                 )}
 
-                {!laden && !fehler && dokumentListe.map((dokument) => (
+                {!laden && !fehler && gefilterteDokumente.map((dokument) => (
                   <tr key={dokument.id} className="hover:bg-gray-50/70">
                     <td className="px-6 py-4 text-sm text-gray-900">
                       {dokument.dokumentId ? (

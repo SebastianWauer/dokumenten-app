@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
+import { getFeld } from '../lib/utils'
 
 const dokumentTypen = ['Rechnung', 'Angebot', 'Auftragsbestätigung', 'Lieferschein', 'Gutschrift']
 
@@ -33,15 +34,6 @@ const dokumentConfig = {
   },
 }
 
-function getFeld(datensatz, kandidaten) {
-  for (const feld of kandidaten) {
-    if (datensatz?.[feld] !== null && datensatz?.[feld] !== undefined && datensatz?.[feld] !== '') {
-      return datensatz[feld]
-    }
-  }
-  return ''
-}
-
 function toDecimal(wert) {
   const normalisiert = String(wert || '').replace(',', '.').trim()
   const nummer = Number(normalisiert)
@@ -65,6 +57,19 @@ function berechnePositionsGesamt(position) {
   const rabatt = toDecimal(position.rabattProzent)
   const brutto = menge * einzelpreis
   return brutto - (brutto * rabatt) / 100
+}
+
+function leerePosition(id) {
+  return {
+    id,
+    bezeichnung: '',
+    beschreibung: '',
+    interneNotiz: '',
+    menge: '1',
+    einheit: 'Stk',
+    einzelpreis: '',
+    rabattProzent: '0',
+  }
 }
 
 function findeCounterInfo(dokumentTyp, profil) {
@@ -97,9 +102,7 @@ export default function DokumentNeu() {
   const [leistungszeitraum, setLeistungszeitraum] = useState('')
   const [einleitungstext, setEinleitungstext] = useState('')
   const [schlusstext, setSchlusstext] = useState('')
-  const [positionen, setPositionen] = useState([
-    { id: 1, bezeichnung: '', menge: '1', einheit: 'Stk', einzelpreis: '', rabattProzent: '0' },
-  ])
+  const [positionen, setPositionen] = useState([leerePosition(1)])
 
   const [laden, setLaden] = useState(true)
   const [speichern, setSpeichern] = useState(false)
@@ -117,7 +120,7 @@ export default function DokumentNeu() {
   const ust = paragraph19Aktiv ? 0 : netto * 0.19
   const brutto = netto + ust
 
-  async function ladeDaten() {
+  const ladeDaten = useCallback(async function ladeDaten() {
     setLaden(true)
     setFehler('')
 
@@ -141,11 +144,15 @@ export default function DokumentNeu() {
     } finally {
       setLaden(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    ladeDaten()
-  }, [])
+    const timeoutId = window.setTimeout(() => {
+      ladeDaten()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [ladeDaten])
 
   function updatePosition(positionId, feld, wert) {
     setPositionen((alt) => alt.map((position) => {
@@ -155,10 +162,7 @@ export default function DokumentNeu() {
   }
 
   function positionHinzufuegen() {
-    setPositionen((alt) => [
-      ...alt,
-      { id: Date.now(), bezeichnung: '', menge: '1', einheit: 'Stk', einzelpreis: '', rabattProzent: '0' },
-    ])
+    setPositionen((alt) => [...alt, leerePosition(Date.now())])
   }
 
   function positionEntfernen(positionId) {
@@ -213,6 +217,18 @@ export default function DokumentNeu() {
         brutto_gesamt: brutto,
       }
 
+      const { data: counterUpdate, error: profilError } = await supabase
+        .from('firmenprofile')
+        .update({ [counterInfo.nummerFeld]: counterInfo.aktuelleNummer + 1 })
+        .eq('id', firmenprofil.id)
+        .eq(counterInfo.nummerFeld, counterInfo.aktuelleNummer)
+        .select('id')
+        .single()
+
+      if (profilError || !counterUpdate?.id) {
+        throw new Error('Dokumentnummer wurde gerade anderweitig vergeben. Bitte erneut speichern.')
+      }
+
       const { data: neuesDokument, error: dokumentError } = await supabase
         .from('dokumente')
         .insert([dokumentPayload])
@@ -225,7 +241,8 @@ export default function DokumentNeu() {
         dokument_id: neuesDokument.id,
         reihenfolge: index + 1,
         bezeichnung: position.bezeichnung.trim(),
-        beschreibung: null,
+        beschreibung: position.beschreibung?.trim() ? position.beschreibung.trim() : null,
+        interne_notiz: position.interneNotiz?.trim() ? position.interneNotiz.trim() : null,
         menge: toDecimal(position.menge),
         einheit: position.einheit.trim() || null,
         einzelpreis: toDecimal(position.einzelpreis),
@@ -235,13 +252,6 @@ export default function DokumentNeu() {
 
       const { error: positionError } = await supabase.from('positionen').insert(positionPayloads)
       if (positionError) throw positionError
-
-      const { error: profilError } = await supabase
-        .from('firmenprofile')
-        .update({ [counterInfo.nummerFeld]: counterInfo.aktuelleNummer + 1 })
-        .eq('id', firmenprofil.id)
-
-      if (profilError) throw profilError
 
       navigate('/dokumente')
     } catch (err) {
@@ -355,7 +365,7 @@ export default function DokumentNeu() {
                     <thead className="bg-gray-50 border-b border-gray-200">
                       <tr>
                         <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide text-gray-600 uppercase">
-                          Bezeichnung
+                          Position
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide text-gray-600 uppercase">
                           Menge
@@ -381,13 +391,34 @@ export default function DokumentNeu() {
                       {positionen.map((position) => (
                         <tr key={position.id}>
                           <td className="px-4 py-3">
-                            <input
-                              type="text"
-                              value={position.bezeichnung}
-                              onChange={(e) => updatePosition(position.id, 'bezeichnung', e.target.value)}
-                              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
-                              placeholder="Leistung"
-                            />
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                value={position.bezeichnung}
+                                onChange={(e) => updatePosition(position.id, 'bezeichnung', e.target.value)}
+                                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                                placeholder="Bezeichnung"
+                              />
+                              <textarea
+                                value={position.beschreibung}
+                                onChange={(e) => updatePosition(position.id, 'beschreibung', e.target.value)}
+                                rows={2}
+                                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                                placeholder="Beschreibung (optional, erscheint auf Rechnung)"
+                              />
+                              <div className="bg-gray-100 border border-gray-200 rounded-lg p-2">
+                                <label className="block text-xs font-medium text-gray-600 mb-1">
+                                  Interne Notiz - nicht auf Rechnung sichtbar
+                                </label>
+                                <textarea
+                                  value={position.interneNotiz}
+                                  onChange={(e) => updatePosition(position.id, 'interneNotiz', e.target.value)}
+                                  rows={2}
+                                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                                  placeholder="Interne Notiz (optional)"
+                                />
+                              </div>
+                            </div>
                           </td>
                           <td className="px-4 py-3">
                             <input

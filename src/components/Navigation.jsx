@@ -1,5 +1,7 @@
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
+import { getFeld } from '../lib/utils'
 
 const links = [
   { path: '/dashboard', label: 'Dashboard' },
@@ -11,6 +13,32 @@ const links = [
 export default function Navigation() {
   const location = useLocation()
   const navigate = useNavigate()
+  const [profilName, setProfilName] = useState('')
+  const [logoUrl, setLogoUrl] = useState('')
+
+  const ladeProfilName = useCallback(async function ladeProfilName() {
+    try {
+      const { data, error } = await supabase.from('firmenprofile').select('name,inhaber,logo_url').limit(1)
+      if (error) throw error
+
+      const profil = data?.[0]
+      const name = getFeld(profil, ['name'])
+      const inhaber = getFeld(profil, ['inhaber'])
+      setProfilName([name, inhaber].filter(Boolean).join(' · '))
+      setLogoUrl(getFeld(profil, ['logo_url']))
+    } catch {
+      setProfilName('')
+      setLogoUrl('')
+    }
+  }, [])
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      ladeProfilName()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [ladeProfilName])
 
   function istAktiv(path) {
     if (path === '/dashboard') {
@@ -28,8 +56,16 @@ export default function Navigation() {
   return (
     <aside className="w-56 min-h-screen bg-white border-r border-gray-100 flex flex-col">
       <div className="px-6 py-6 border-b border-gray-100">
-        <h1 className="font-bold text-gray-900 text-base">Dokumenten-App</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Sport Voice</p>
+        {logoUrl ? (
+          <img
+            src={logoUrl}
+            alt={profilName || 'Firmenlogo'}
+            className="h-12 w-auto max-w-full object-contain mb-3"
+          />
+        ) : (
+          <h1 className="font-bold text-gray-900 text-base">Dokumenten-App</h1>
+        )}
+        {profilName && <p className="text-xs text-gray-400 mt-0.5 leading-snug">{profilName}</p>}
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">

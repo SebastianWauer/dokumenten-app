@@ -1,18 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
+import { getFeld } from '../lib/utils'
 
 const dokumentTypen = ['Rechnung', 'Angebot', 'Auftragsbestätigung', 'Lieferschein', 'Gutschrift']
-
-function getFeld(datensatz, kandidaten) {
-  for (const feld of kandidaten) {
-    if (datensatz?.[feld] !== null && datensatz?.[feld] !== undefined && datensatz?.[feld] !== '') {
-      return datensatz[feld]
-    }
-  }
-  return ''
-}
+const statusOptionen = ['Entwurf', 'Versendet', 'Bezahlt', 'Überfällig', 'Storniert']
 
 function toDecimal(wert) {
   const normalisiert = String(wert || '').replace(',', '.').trim()
@@ -35,14 +28,29 @@ function berechnePositionsGesamt(position) {
   return brutto - (brutto * rabatt) / 100
 }
 
+function leerePosition(id) {
+  return {
+    id,
+    bezeichnung: '',
+    beschreibung: '',
+    interneNotiz: '',
+    menge: '1',
+    einheit: 'Stk',
+    einzelpreis: '',
+    rabattProzent: '0',
+  }
+}
+
 function mapPositionen(positionenData) {
   if (!positionenData || positionenData.length === 0) {
-    return [{ id: Date.now(), bezeichnung: '', menge: '1', einheit: 'Stk', einzelpreis: '', rabattProzent: '0' }]
+    return [leerePosition(Date.now())]
   }
 
   return positionenData.map((position, index) => ({
     id: position.id ?? `p-${index}`,
     bezeichnung: getFeld(position, ['bezeichnung']),
+    beschreibung: getFeld(position, ['beschreibung']),
+    interneNotiz: getFeld(position, ['interne_notiz']),
     menge: String(getFeld(position, ['menge']) || '1'),
     einheit: getFeld(position, ['einheit']) || 'Stk',
     einzelpreis: String(getFeld(position, ['einzelpreis']) || ''),
@@ -58,14 +66,15 @@ export default function DokumentBearbeiten() {
   const [kunden, setKunden] = useState([])
   const [dokumentTyp, setDokumentTyp] = useState('Rechnung')
   const [dokumentNummer, setDokumentNummer] = useState('')
+  const [status, setStatus] = useState('Entwurf')
   const [kundenId, setKundenId] = useState('')
   const [datum, setDatum] = useState('')
   const [leistungszeitraum, setLeistungszeitraum] = useState('')
+  const [leistungszeitraumAnzeigen, setLeistungszeitraumAnzeigen] = useState(true)
   const [einleitungstext, setEinleitungstext] = useState('')
   const [schlusstext, setSchlusstext] = useState('')
-  const [positionen, setPositionen] = useState([
-    { id: 1, bezeichnung: '', menge: '1', einheit: 'Stk', einzelpreis: '', rabattProzent: '0' },
-  ])
+  const [positionen, setPositionen] = useState([leerePosition(1)])
+  const [dokumentSpalten, setDokumentSpalten] = useState([])
 
   const [laden, setLaden] = useState(true)
   const [speichern, setSpeichern] = useState(false)
@@ -81,7 +90,7 @@ export default function DokumentBearbeiten() {
   const ust = paragraph19Aktiv ? 0 : netto * 0.19
   const brutto = netto + ust
 
-  async function ladeDaten() {
+  const ladeDaten = useCallback(async function ladeDaten() {
     setLaden(true)
     setFehler('')
 
@@ -111,11 +120,14 @@ export default function DokumentBearbeiten() {
 
       setFirmenprofil(profilData ?? null)
       setKunden(kundenData ?? [])
+      setDokumentSpalten(Object.keys(dokumentData))
       setDokumentTyp(getFeld(dokumentData, ['typ']) || 'Rechnung')
       setDokumentNummer(getFeld(dokumentData, ['nummer']))
+      setStatus(getFeld(dokumentData, ['status']) || 'Entwurf')
       setKundenId(String(getFeld(dokumentData, ['kunde_id']) || ''))
       setDatum(getFeld(dokumentData, ['datum']) || '')
       setLeistungszeitraum(getFeld(dokumentData, ['leistungszeitraum']))
+      setLeistungszeitraumAnzeigen(dokumentData.leistungszeitraum_anzeigen !== false)
       setEinleitungstext(getFeld(dokumentData, ['einleitungstext']))
       setSchlusstext(getFeld(dokumentData, ['schlusstext']))
       setPositionen(mapPositionen(positionenData))
@@ -124,11 +136,15 @@ export default function DokumentBearbeiten() {
     } finally {
       setLaden(false)
     }
-  }
+  }, [id])
 
   useEffect(() => {
-    ladeDaten()
-  }, [id])
+    const timeoutId = window.setTimeout(() => {
+      ladeDaten()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [ladeDaten])
 
   function updatePosition(positionId, feld, wert) {
     setPositionen((alt) => alt.map((position) => {
@@ -138,10 +154,7 @@ export default function DokumentBearbeiten() {
   }
 
   function positionHinzufuegen() {
-    setPositionen((alt) => [
-      ...alt,
-      { id: Date.now(), bezeichnung: '', menge: '1', einheit: 'Stk', einzelpreis: '', rabattProzent: '0' },
-    ])
+    setPositionen((alt) => [...alt, leerePosition(Date.now())])
   }
 
   function positionEntfernen(positionId) {
@@ -182,7 +195,7 @@ export default function DokumentBearbeiten() {
         typ: dokumentTyp,
         datum,
         leistungszeitraum: leistungszeitraum || null,
-        status: 'Entwurf',
+        status,
         firmenprofil_id: firmenprofil.id,
         kunde_id: ausgewaehlterKunde.id,
         einleitungstext: einleitungstext || null,
@@ -190,6 +203,10 @@ export default function DokumentBearbeiten() {
         netto_gesamt: netto,
         ust_betrag: ust,
         brutto_gesamt: brutto,
+      }
+
+      if (dokumentSpalten.includes('leistungszeitraum_anzeigen')) {
+        dokumentPayload.leistungszeitraum_anzeigen = leistungszeitraumAnzeigen
       }
 
       const { error: updateError } = await supabase.from('dokumente').update(dokumentPayload).eq('id', id)
@@ -202,7 +219,8 @@ export default function DokumentBearbeiten() {
         dokument_id: id,
         reihenfolge: index + 1,
         bezeichnung: position.bezeichnung.trim(),
-        beschreibung: null,
+        beschreibung: position.beschreibung?.trim() ? position.beschreibung.trim() : null,
+        interne_notiz: position.interneNotiz?.trim() ? position.interneNotiz.trim() : null,
         menge: toDecimal(position.menge),
         einheit: position.einheit.trim() || null,
         einzelpreis: toDecimal(position.einzelpreis),
@@ -284,7 +302,7 @@ export default function DokumentBearbeiten() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Datum</label>
                   <input
@@ -305,6 +323,28 @@ export default function DokumentBearbeiten() {
                     className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
                     placeholder="z. B. 01.04.2026 - 15.04.2026"
                   />
+                  <label className="mt-2 flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={leistungszeitraumAnzeigen}
+                      onChange={(e) => setLeistungszeitraumAnzeigen(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300 text-[#185FA5] focus:ring-[#185FA5]"
+                    />
+                    Im PDF anzeigen
+                  </label>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                  <select
+                    value={status}
+                    onChange={(e) => setStatus(e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                  >
+                    {statusOptionen.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
 
@@ -325,7 +365,7 @@ export default function DokumentBearbeiten() {
                     <thead className="bg-gray-50 border-b border-gray-200">
                       <tr>
                         <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide text-gray-600 uppercase">
-                          Bezeichnung
+                          Position
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-semibold tracking-wide text-gray-600 uppercase">
                           Menge
@@ -351,13 +391,34 @@ export default function DokumentBearbeiten() {
                       {positionen.map((position) => (
                         <tr key={position.id}>
                           <td className="px-4 py-3">
-                            <input
-                              type="text"
-                              value={position.bezeichnung}
-                              onChange={(e) => updatePosition(position.id, 'bezeichnung', e.target.value)}
-                              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
-                              placeholder="Leistung"
-                            />
+                            <div className="space-y-2">
+                              <input
+                                type="text"
+                                value={position.bezeichnung}
+                                onChange={(e) => updatePosition(position.id, 'bezeichnung', e.target.value)}
+                                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                                placeholder="Bezeichnung"
+                              />
+                              <textarea
+                                value={position.beschreibung}
+                                onChange={(e) => updatePosition(position.id, 'beschreibung', e.target.value)}
+                                rows={2}
+                                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                                placeholder="Beschreibung (optional, erscheint auf Rechnung)"
+                              />
+                              <div className="bg-gray-100 border border-gray-200 rounded-lg p-2">
+                                <label className="block text-xs font-medium text-gray-600 mb-1">
+                                  Interne Notiz - nicht auf Rechnung sichtbar
+                                </label>
+                                <textarea
+                                  value={position.interneNotiz}
+                                  onChange={(e) => updatePosition(position.id, 'interneNotiz', e.target.value)}
+                                  rows={2}
+                                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-800 bg-white focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                                  placeholder="Interne Notiz (optional)"
+                                />
+                              </div>
+                            </div>
                           </td>
                           <td className="px-4 py-3">
                             <input

@@ -1,6 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
+import { DEFAULT_PDF_LAYOUT, PDF_MARGINS, PDF_PAGE, resolvePdfLayout } from '../lib/pdfLayout'
+import { getFeld } from '../lib/utils'
+
+const PREVIEW_WIDTH = 430
+const PREVIEW_SCALE = PREVIEW_WIDTH / PDF_PAGE.width
+const PREVIEW_HEIGHT = Math.round(PDF_PAGE.height * PREVIEW_SCALE)
 
 const initialForm = {
   name: '',
@@ -19,15 +25,7 @@ const initialForm = {
   bank: '',
   zahlungszielTage: '',
   logoUrl: '',
-}
-
-function getFeld(datensatz, kandidaten) {
-  for (const feld of kandidaten) {
-    if (datensatz[feld] !== null && datensatz[feld] !== undefined) {
-      return datensatz[feld]
-    }
-  }
-  return ''
+  pdfLayout: resolvePdfLayout(DEFAULT_PDF_LAYOUT),
 }
 
 function toBool(wert) {
@@ -71,6 +69,7 @@ function baueProfilPayload(form, bekannteSpalten) {
     [waehleSpalte(['zahlungsziel_tage', 'zahlungsziel', 'payment_term_days'], bekannteSpalten)]:
       form.zahlungszielTage === '' ? null : Number(form.zahlungszielTage),
     [waehleSpalte(['logo_url'], bekannteSpalten)]: form.logoUrl || null,
+    [waehleSpalte(['pdf_layout'], bekannteSpalten)]: form.pdfLayout,
   }
 }
 
@@ -84,8 +83,10 @@ export default function Einstellungen() {
   const [erfolg, setErfolg] = useState('')
   const [logoDatei, setLogoDatei] = useState(null)
   const [logoVorschau, setLogoVorschau] = useState('')
+  const [drag, setDrag] = useState(null)
+  const previewRef = useRef(null)
 
-  async function ladeProfil() {
+  const ladeProfil = useCallback(async function ladeProfil() {
     setLaden(true)
     setFehler('')
 
@@ -121,17 +122,22 @@ export default function Einstellungen() {
         bank: getFeld(profil, ['bank']),
         zahlungszielTage: String(getFeld(profil, ['zahlungsziel_tage', 'zahlungsziel', 'payment_term_days']) || ''),
         logoUrl: getFeld(profil, ['logo_url']),
+        pdfLayout: resolvePdfLayout(getFeld(profil, ['pdf_layout'])),
       })
     } catch (err) {
       setFehler(err.message || 'Firmenprofil konnte nicht geladen werden.')
     } finally {
       setLaden(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    ladeProfil()
-  }, [])
+    const timeoutId = window.setTimeout(() => {
+      ladeProfil()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [ladeProfil])
 
   useEffect(() => {
     return () => {
@@ -147,6 +153,110 @@ export default function Einstellungen() {
       [feld]: wert,
     }))
   }
+
+  function updateLayout(part, patch) {
+    setForm((alt) => ({
+      ...alt,
+      pdfLayout: resolvePdfLayout({
+        ...alt.pdfLayout,
+        [part]: {
+          ...alt.pdfLayout[part],
+          ...patch,
+        },
+      }),
+    }))
+  }
+
+  function updateFold(patch) {
+    setForm((alt) => ({
+      ...alt,
+      pdfLayout: resolvePdfLayout({
+        ...alt.pdfLayout,
+        fold: {
+          ...alt.pdfLayout.fold,
+          ...patch,
+        },
+      }),
+    }))
+  }
+
+  function starteDrag(event, target, mode = 'move') {
+    if (!previewRef.current) return
+    event.preventDefault()
+    event.stopPropagation()
+
+    const rect = previewRef.current.getBoundingClientRect()
+    const scaleX = PDF_PAGE.width / rect.width
+    const scaleY = PDF_PAGE.height / rect.height
+
+    if (target === 'foldTop' || target === 'foldBottom') {
+      setDrag({
+        target,
+        mode: 'line',
+        startX: event.clientX,
+        startY: event.clientY,
+        startTopY: form.pdfLayout.fold.topY,
+        startBottomY: form.pdfLayout.fold.bottomY,
+        scaleX,
+        scaleY,
+      })
+      return
+    }
+
+    const box = form.pdfLayout[target]
+    setDrag({
+      target,
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      startBox: box,
+      scaleX,
+      scaleY,
+    })
+  }
+
+  useEffect(() => {
+    if (!drag) return undefined
+
+    function onMouseMove(event) {
+      const dx = (event.clientX - drag.startX) * drag.scaleX
+      const dy = (event.clientY - drag.startY) * drag.scaleY
+
+      if (drag.mode === 'line') {
+        if (drag.target === 'foldTop') {
+          updateFold({ topY: drag.startTopY + dy })
+        } else {
+          updateFold({ bottomY: drag.startBottomY + dy })
+        }
+        return
+      }
+
+      if (drag.mode === 'resize') {
+        updateLayout(drag.target, {
+          w: drag.startBox.w + dx,
+          h: drag.startBox.h + dy,
+        })
+        return
+      }
+
+      updateLayout(drag.target, {
+        x: drag.startBox.x + dx,
+        y: drag.startBox.y + dy,
+      })
+    }
+
+    function onMouseUp() {
+      setDrag(null)
+    }
+
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [drag, form.pdfLayout])
 
   function logoDateiAuswaehlen(e) {
     const datei = e.target.files?.[0]
@@ -380,6 +490,9 @@ export default function Einstellungen() {
                   onChange={logoDateiAuswaehlen}
                   className="block w-full text-sm text-gray-700 file:mr-3 file:rounded-lg file:border-0 file:bg-[#185FA5] file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-[#154f8a]"
                 />
+                <p className="mt-2 text-xs text-gray-500">
+                  JPG und PNG erscheinen auch im PDF. SVG wird in der App gespeichert, aber beim PDF-Export durch Text ersetzt.
+                </p>
                 {(logoVorschau || form.logoUrl) && (
                   <div className="mt-3">
                     <img
@@ -389,6 +502,86 @@ export default function Einstellungen() {
                     />
                   </div>
                 )}
+              </div>
+
+              <div className="border border-gray-200 rounded-lg p-4">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    PDF-Layout per Drag & Drop
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => updateFeld('pdfLayout', resolvePdfLayout(DEFAULT_PDF_LAYOUT))}
+                    className="rounded-lg px-3 py-2 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 transition-colors"
+                  >
+                    Layout zurücksetzen
+                  </button>
+                </div>
+
+                <p className="text-xs text-gray-500 mb-3">
+                  Elemente verschieben. Unten rechts am Kasten ziehen, um die Größe zu ändern.
+                </p>
+                <p className="text-xs text-gray-500 mb-3">
+                  Feste Seitenränder: oben {PDF_MARGINS.top}px, rechts {PDF_MARGINS.right}px, unten {PDF_MARGINS.bottom}px, links {PDF_MARGINS.left}px.
+                </p>
+
+                <div className="overflow-auto">
+                  <div
+                    ref={previewRef}
+                    className="relative border border-gray-300 bg-white rounded-lg"
+                    style={{ width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT }}
+                  >
+                    <div
+                      className="absolute border border-dashed border-gray-300 pointer-events-none"
+                      style={{
+                        left: form.pdfLayout.margins.left * PREVIEW_SCALE,
+                        top: form.pdfLayout.margins.top * PREVIEW_SCALE,
+                        width: (PDF_PAGE.width - form.pdfLayout.margins.left - form.pdfLayout.margins.right) * PREVIEW_SCALE,
+                        height: (PDF_PAGE.height - form.pdfLayout.margins.top - form.pdfLayout.margins.bottom) * PREVIEW_SCALE,
+                      }}
+                    />
+                    {[
+                      { key: 'sender', label: 'Absender', className: 'bg-blue-50 border-blue-200 text-blue-800' },
+                      { key: 'recipient', label: 'Empfänger', className: 'bg-gray-50 border-gray-300 text-gray-800' },
+                      { key: 'meta', label: 'Datum / Kontakt', className: 'bg-gray-50 border-gray-300 text-gray-800' },
+                      { key: 'logo', label: 'Logo', className: 'bg-blue-50 border-blue-200 text-blue-800' },
+                      { key: 'positionen', label: 'Positionen', className: 'bg-gray-50 border-gray-300 text-gray-800' },
+                      { key: 'footer', label: 'Fußzeile', className: 'bg-blue-50 border-blue-200 text-blue-800' },
+                    ].map((item) => {
+                      const box = form.pdfLayout[item.key]
+                      return (
+                        <div
+                          key={item.key}
+                          onMouseDown={(event) => starteDrag(event, item.key, 'move')}
+                          className={`absolute border rounded p-1 text-[10px] font-medium cursor-move select-none ${item.className}`}
+                          style={{
+                            left: box.x * PREVIEW_SCALE,
+                            top: box.y * PREVIEW_SCALE,
+                            width: box.w * PREVIEW_SCALE,
+                            height: box.h * PREVIEW_SCALE,
+                          }}
+                        >
+                          {item.label}
+                          <span
+                            onMouseDown={(event) => starteDrag(event, item.key, 'resize')}
+                            className="absolute right-0 bottom-0 w-3 h-3 bg-gray-400 rounded-tl cursor-se-resize"
+                          />
+                        </div>
+                      )
+                    })}
+
+                    <div
+                      onMouseDown={(event) => starteDrag(event, 'foldTop')}
+                      className="absolute left-0 right-0 border-t border-dashed border-gray-500 cursor-ns-resize"
+                      style={{ top: form.pdfLayout.fold.topY * PREVIEW_SCALE }}
+                    />
+                    <div
+                      onMouseDown={(event) => starteDrag(event, 'foldBottom')}
+                      className="absolute left-0 right-0 border-t border-dashed border-gray-500 cursor-ns-resize"
+                      style={{ top: form.pdfLayout.fold.bottomY * PREVIEW_SCALE }}
+                    />
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

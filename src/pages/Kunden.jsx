@@ -1,15 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Navigation from '../components/Navigation'
 import { supabase } from '../lib/supabase'
-
-function getFeld(kunde, kandidaten) {
-  for (const feld of kandidaten) {
-    if (kunde?.[feld] !== null && kunde?.[feld] !== undefined && kunde?.[feld] !== '') {
-      return kunde[feld]
-    }
-  }
-  return ''
-}
+import { getFeld } from '../lib/utils'
 
 const initialForm = {
   firma: '',
@@ -53,7 +45,7 @@ export default function Kunden() {
     })
   }, [kunden])
 
-  async function ladeKunden() {
+  const ladeKunden = useCallback(async function ladeKunden() {
     setLaden(true)
     setFehler('')
 
@@ -66,11 +58,15 @@ export default function Kunden() {
     } finally {
       setLaden(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
-    ladeKunden()
-  }, [])
+    const timeoutId = window.setTimeout(() => {
+      ladeKunden()
+    }, 0)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [ladeKunden])
 
   function resetFormular() {
     setForm(initialForm)
