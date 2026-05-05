@@ -72,7 +72,12 @@ function truncateText(wert, maxLen) {
 
 function buildEpcPayload(dokument, profil) {
   const iban = truncateText(getFeld(profil, ['iban']), 34).replace(/\s+/g, '')
-  const empfaenger = truncateText(getFeld(profil, ['name']) || getFeld(profil, ['inhaber']), 70)
+  const empfaenger = truncateText(
+    getFeld(profil, ['kontoinhaber', 'konto_inhaber', 'account_holder'])
+      || getFeld(profil, ['inhaber'])
+      || getFeld(profil, ['name']),
+    70,
+  )
   if (!iban || !empfaenger) return ''
 
   const bic = truncateText(getFeld(profil, ['bic']), 11)
@@ -1607,4 +1612,3 @@ export default function DokumentDetail() {
     </div>
   )
 }
-
