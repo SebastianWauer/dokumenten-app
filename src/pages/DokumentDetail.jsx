@@ -165,6 +165,7 @@ function baueFooterDaten(profil) {
       steuerKennzeichen,
     ].filter(Boolean).join(' · '),
     bank: [
+      getFeld(profil, ['kontoinhaber', 'konto_inhaber', 'account_holder']) ? `Kontoinhaber: ${getFeld(profil, ['kontoinhaber', 'konto_inhaber', 'account_holder'])}` : '',
       getFeld(profil, ['bank']) ? `Bank: ${getFeld(profil, ['bank'])}` : '',
       getFeld(profil, ['iban']) ? `IBAN: ${getFeld(profil, ['iban'])}` : '',
       getFeld(profil, ['bic']) ? `BIC: ${getFeld(profil, ['bic'])}` : '',

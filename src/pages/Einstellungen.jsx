@@ -24,6 +24,7 @@ const initialForm = {
   iban: '',
   bic: '',
   bank: '',
+  kontoinhaber: '',
   zahlungszielTage: '',
   logoUrl: '',
   pdfLayout: resolvePdfLayout(DEFAULT_PDF_LAYOUT),
@@ -104,6 +105,8 @@ function baueProfilPayload(form, bekannteSpalten) {
     [waehleSpalte(['iban'], bekannteSpalten)]: form.iban,
     [waehleSpalte(['bic'], bekannteSpalten)]: form.bic,
     [waehleSpalte(['bank'], bekannteSpalten)]: form.bank,
+    [waehleSpalte(['kontoinhaber', 'konto_inhaber', 'account_holder'], bekannteSpalten)]:
+      form.kontoinhaber,
     [waehleSpalte(['zahlungsziel_tage', 'zahlungsziel', 'payment_term_days'], bekannteSpalten)]:
       form.zahlungszielTage === '' ? null : Number(form.zahlungszielTage),
     [waehleSpalte(['logo_url'], bekannteSpalten)]: form.logoUrl || null,
@@ -159,6 +162,7 @@ export default function Einstellungen() {
         iban: getFeld(profil, ['iban']),
         bic: getFeld(profil, ['bic']),
         bank: getFeld(profil, ['bank']),
+        kontoinhaber: getFeld(profil, ['kontoinhaber', 'konto_inhaber', 'account_holder']),
         zahlungszielTage: String(getFeld(profil, ['zahlungsziel_tage', 'zahlungsziel', 'payment_term_days']) || ''),
         logoUrl: getFeld(profil, ['logo_url']),
         pdfLayout: resolvePdfLayout(getFeld(profil, ['pdf_layout'])),
@@ -643,7 +647,7 @@ export default function Einstellungen() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">IBAN</label>
                   <input
@@ -674,6 +678,17 @@ export default function Einstellungen() {
                     onChange={(e) => updateFeld('bank', e.target.value)}
                     className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
                     placeholder="Bankname"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Kontoinhaber</label>
+                  <input
+                    type="text"
+                    value={form.kontoinhaber}
+                    onChange={(e) => updateFeld('kontoinhaber', e.target.value)}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-[#185FA5]"
+                    placeholder="Sebastian Wauer"
                   />
                 </div>
 
